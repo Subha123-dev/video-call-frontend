@@ -6,11 +6,14 @@ import { io } from "socket.io-client";
 const APP_ID = "0013df50016b40d4995a8468c4fd44e5";
 
 // ---------------- BACKEND URL ----------------
-// ⚠️ No "/" at the end
-const BACKEND_URL = "https://video-call-backend-z7c1.onrender.com";
+const BACKEND_URL =
+  "https://video-call-backend-z7c1.onrender.com";
 
 // ---------------- AGORA CLIENT ----------------
-const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+const client = AgoraRTC.createClient({
+  mode: "rtc",
+  codec: "vp8",
+});
 
 export default function Meeting() {
   const [roomId, setRoomId] = useState("");
@@ -21,66 +24,80 @@ export default function Meeting() {
   const [remoteUsers, setRemoteUsers] = useState([]);
 
   const socketRef = useRef(null);
-  const localPlayerRef = useRef(null);
+  const localRef = useRef(null);
 
-  // -------- AUTO ROOM FROM URL --------
+  // ---------------- AUTO ROOM FROM URL ----------------
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(
+      window.location.search
+    );
     const room = params.get("room");
     if (room) setRoomId(room);
   }, []);
 
-  // -------- CREATE ROOM --------
+  // ---------------- CREATE ROOM ----------------
   const createRoom = () => {
-    const id = Math.random().toString(36).substring(2, 8);
+    const id = Math.random()
+      .toString(36)
+      .substring(2, 8);
     setRoomId(id);
     alert("Room Created: " + id);
   };
 
-  // -------- COPY LINK --------
+  // ---------------- COPY LINK ----------------
   const copyLink = () => {
     const link = `${window.location.origin}?room=${roomId}`;
     navigator.clipboard.writeText(link);
     alert("Copied: " + link);
   };
 
-  // -------- JOIN ROOM --------
+  // ---------------- JOIN ROOM ----------------
   const joinRoom = async () => {
-    if (!roomId || !userName)
-      return alert("Enter Room ID & Name");
+    if (joined) {
+      alert("Already joined");
+      return;
+    }
+
+    if (!roomId || !userName) {
+      alert("Enter Room ID & Name");
+      return;
+    }
 
     try {
-      const uid = Math.floor(Math.random() * 100000);
+      const uid = Math.floor(
+        Math.random() * 100000
+      );
 
-      // SOCKET CONNECT
-      socketRef.current = io(BACKEND_URL, {
-        transports: ["websocket"],
-      });
-
+      // SOCKET
+      socketRef.current = io(BACKEND_URL);
       socketRef.current.emit("join-room", {
         roomId,
         userName,
       });
 
-      // GET TOKEN
+      // TOKEN
       const res = await fetch(
         `${BACKEND_URL}/getToken?channelName=${roomId}&uid=${uid}`
       );
 
       const data = await res.json();
-      const token = data.token;
 
       // JOIN AGORA
-      await client.join(APP_ID, roomId, token, uid);
+      await client.join(
+        APP_ID,
+        roomId,
+        data.token,
+        uid
+      );
 
-      // CREATE TRACKS
+      // CREATE MIC + CAM TRACKS
       const tracks =
         await AgoraRTC.createMicrophoneAndCameraTracks();
 
       setLocalTracks(tracks);
 
       // PLAY LOCAL VIDEO
-      tracks[1].play(localPlayerRef.current);
+      tracks[1].play(localRef.current);
 
       // PUBLISH
       await client.publish(tracks);
@@ -88,13 +105,17 @@ export default function Meeting() {
       setJoined(true);
     } catch (err) {
       console.error(err);
-      alert("Join failed. Check console.");
+      alert("Join failed");
     }
   };
 
-  // -------- LEAVE --------
+  // ---------------- LEAVE ----------------
   const leaveRoom = async () => {
-    localTracks.forEach((t) => t.close());
+    localTracks.forEach((t) => {
+      t.stop();
+      t.close();
+    });
+
     await client.leave();
 
     if (socketRef.current)
@@ -104,51 +125,70 @@ export default function Meeting() {
     setRemoteUsers([]);
   };
 
-  // -------- MIC --------
+  // ---------------- MIC ----------------
   const toggleMic = async () => {
     if (!localTracks[0]) return;
+
     await localTracks[0].setEnabled(
       !localTracks[0].enabled
     );
   };
 
-  // -------- CAMERA --------
+  // ---------------- CAMERA ----------------
   const toggleCam = async () => {
     if (!localTracks[1]) return;
+
     await localTracks[1].setEnabled(
       !localTracks[1].enabled
     );
   };
 
-  // -------- SCREEN SHARE --------
+  // ---------------- SCREEN SHARE ----------------
   const shareScreen = async () => {
     try {
+      // CREATE SCREEN TRACK
       const screenTrack =
         await AgoraRTC.createScreenVideoTrack();
 
+      // UNPUBLISH CAMERA
       await client.unpublish(localTracks[1]);
       localTracks[1].stop();
 
+      // PUBLISH SCREEN
       await client.publish(screenTrack);
-      screenTrack.play(localPlayerRef.current);
+      screenTrack.play(localRef.current);
 
-      screenTrack.on("track-ended", async () => {
-        await client.unpublish(screenTrack);
-        await client.publish(localTracks[1]);
-        localTracks[1].play(localPlayerRef.current);
-      });
+      // WHEN SCREEN STOPPED
+      screenTrack.on(
+        "track-ended",
+        async () => {
+          await client.unpublish(screenTrack);
+
+          // RECREATE CAMERA (mobile fix)
+          const camTrack =
+            await AgoraRTC.createCameraVideoTrack();
+
+          localTracks[1] = camTrack;
+
+          await client.publish(camTrack);
+          camTrack.play(localRef.current);
+        }
+      );
     } catch (err) {
       console.error(err);
       alert("Screen share failed");
     }
   };
 
-  // -------- AGORA EVENTS --------
+  // ---------------- AGORA EVENTS ----------------
   useEffect(() => {
     client.on(
       "user-published",
       async (user, mediaType) => {
-        await client.subscribe(user, mediaType);
+        await client.subscribe(
+          user,
+          mediaType
+        );
 
         if (mediaType === "video") {
           setRemoteUsers((prev) => [
@@ -165,11 +205,14 @@ export default function Meeting() {
 
     client.on("user-left", (user) => {
       setRemoteUsers((prev) =>
-        prev.filter((u) => u.uid !== user.uid)
+        prev.filter(
+          (u) => u.uid !== user.uid
+        )
       );
     });
   }, []);
 
+  // PLAY REMOTE
   useEffect(() => {
     remoteUsers.forEach((user) => {
       if (user.videoTrack) {
@@ -180,11 +223,17 @@ export default function Meeting() {
     });
   }, [remoteUsers]);
 
-  // -------- UI --------
+  // ---------------- UI ----------------
   return (
-    <div style={{ background: "#111", minHeight: "100vh", color: "#fff" }}>
+    <div
+      style={{
+        background: "#111",
+        minHeight: "100vh",
+        color: "#fff",
+      }}
+    >
       <h2 style={{ textAlign: "center" }}>
-        Video Meeting
+        Meeting Room
       </h2>
 
       {!joined ? (
@@ -197,13 +246,15 @@ export default function Meeting() {
             }
           />
 
-          <br /><br />
+          <br />
+          <br />
 
           <button onClick={createRoom}>
             Create Room
           </button>
 
-          <br /><br />
+          <br />
+          <br />
 
           <input
             placeholder="Room ID"
@@ -213,9 +264,13 @@ export default function Meeting() {
             }
           />
 
-          <br /><br />
+          <br />
+          <br />
 
-          <button onClick={joinRoom}>
+          <button
+            onClick={joinRoom}
+            disabled={joined}
+          >
             Join Meeting
           </button>
         </div>
@@ -230,14 +285,16 @@ export default function Meeting() {
               padding: "5px",
             }}
           >
+            {/* LOCAL */}
             <div
-              ref={localPlayerRef}
+              ref={localRef}
               style={{
                 height: "300px",
                 background: "#000",
               }}
             />
 
+            {/* REMOTE */}
             {remoteUsers.map((user) => (
               <div
                 key={user.uid}
@@ -250,7 +307,12 @@ export default function Meeting() {
             ))}
           </div>
 
-          <div style={{ textAlign: "center", marginTop: 10 }}>
+          <div
+            style={{
+              textAlign: "center",
+              marginTop: 10,
+            }}
+          >
             <button onClick={toggleMic}>
               Toggle Mic
             </button>
